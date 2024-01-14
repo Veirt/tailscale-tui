@@ -3,13 +3,14 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
-
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"os"
+	"os/exec"
+	"sort"
+	"strings"
 )
 
 func checkTailscale() error {
@@ -28,7 +29,40 @@ var (
 	quitTextStyle = lipgloss.NewStyle().Margin(1, 0, 2, 4)
 )
 
-var finalCmd string = "tailscale up "
+var boolChoices = []string{"true", "false"}
+
+type command struct {
+	name  string
+	flags map[flag]string
+}
+
+func (c command) String() string {
+	result := c.name + " "
+
+	// c.flags is a map of flag -> value
+	// turn it into a string, sorted by flag name
+
+	// sort the flags by name
+	var keys []flag
+	for k := range c.flags {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].name < keys[j].name
+	})
+
+	for _, k := range keys {
+		if k.isBooleanFlag {
+			result += k.name + "=" + c.flags[k] + " "
+		} else {
+			result += k.name + " \"" + c.flags[k] + "\" "
+		}
+	}
+
+	return result
+}
+
+var finalCmd command = command{name: "tailscale up", flags: map[flag]string{}}
 
 func (i flag) Title() string       { return i.name }
 func (i flag) Description() string { return i.description }
@@ -37,16 +71,30 @@ func (i flag) FilterValue() string { return i.name }
 type model struct {
 	list      list.Model
 	choice    flag
+	TextInput textinput.Model
 	answer    string
 	inputting bool
 	quitting  bool
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return textinput.Blink
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.inputting && m.choice.isBooleanFlag {
+		return updateBooleanChoice(msg, m)
+	}
+
+	if m.inputting && !m.choice.isBooleanFlag {
+		return updateInput(msg, m)
+	}
+
+	return updateListSelection(msg, m)
+
+}
+
+func updateListSelection(msg tea.Msg, m model) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.list.SetWidth(msg.Width)
@@ -64,9 +112,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.choice = i
 
 				m.inputting = true
-				// finalCmd += m.choice.name + " "
+				if m.choice.isBooleanFlag {
+					m.answer = "true" // initialize to true
+				}
 
 			}
+
 			return m, nil
 		}
 	}
@@ -76,41 +127,106 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m model) booleanInput() string {
-	choices := []string{"true", "false"}
+func booleanInputView(m model) string {
 	s := strings.Builder{}
 
+	s.WriteString(m.choice.Description())
+	s.WriteString("\n")
 	s.WriteString("What value do you want to pass to?\n\n")
-	for i := 0; i < len(choices); i++ {
-		if m.answer == string(choices[i]) {
+	for i := 0; i < len(boolChoices); i++ {
+		if m.answer == string(boolChoices[i]) {
 			s.WriteString("(•) ")
 		} else {
 			s.WriteString("( ) ")
 		}
-		s.WriteString(string(choices[i]))
+		s.WriteString(string(boolChoices[i]))
 		s.WriteString("\n")
 
 	}
-	s.WriteString("\n(press q to quit)\n")
+
+	s.WriteString("\n(press q to go back)\n")
 
 	return s.String()
+}
+
+func regularInputView(m model) string {
+	s := strings.Builder{}
+
+	s.WriteString(m.choice.Description())
+	s.WriteString("\n")
+	s.WriteString("What value do you want to pass to?\n\n")
+	s.WriteString(m.TextInput.View())
+
+	return s.String()
+}
+
+func updateInput(msg tea.Msg, m model) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "esc":
+			m.inputting = false
+			return m, nil
+
+		case "enter":
+			m.inputting = false
+			finalCmd.flags[m.choice] = m.TextInput.Value()
+			m.TextInput.Reset()
+			return m, nil
+		}
+
+	}
+
+	m.TextInput, cmd = m.TextInput.Update(msg)
+	return m, cmd
+}
+
+func updateBooleanChoice(msg tea.Msg, m model) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "esc":
+			m.inputting = false
+			return m, nil
+
+		case "enter":
+			finalCmd.flags[m.choice] = m.answer
+			m.inputting = false
+			return m, nil
+
+		case "down", "j":
+			m.answer = "false"
+
+		case "up", "k":
+			m.answer = "true"
+		}
+	}
+
+	return m, nil
 
 }
 
 func (m model) View() string {
+	if m.quitting {
+		return quitTextStyle.Render(finalCmd.String())
+	}
+
 	if m.inputting && m.choice.isBooleanFlag {
 		m.inputting = false
-		return m.booleanInput()
+		return booleanInputView(m)
+	}
+
+	if m.inputting && !m.choice.isBooleanFlag {
+		m.inputting = false
+		return regularInputView(m)
 	}
 
 	if m.choice.name != "" {
-		return quitTextStyle.Render(finalCmd) + "\n" +
+		return quitTextStyle.Render(finalCmd.String()) + "\n" +
 			m.list.View()
 	}
-
-	// if m.quitting {
-	// 	return quitTextStyle.Render("Not hungry? That’s cool.")
-	// }
 
 	return "\n" + m.list.View()
 }
@@ -164,10 +280,16 @@ func launchTui(flags []flag) {
 		items = append(items, flag)
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), 0, 35)
+	l := list.New(items, list.NewDefaultDelegate(), 0, 30)
 	l.Title = "Select flags to pass to tailscale up"
 
-	m := model{list: l}
+	ti := textinput.New()
+	ti.Placeholder = "Enter here..."
+	ti.Focus()
+	ti.CharLimit = 156
+	ti.Width = 30
+
+	m := model{list: l, TextInput: ti}
 
 	if _, err := tea.NewProgram(m).Run(); err != nil {
 		fmt.Println("Error running program:", err)
