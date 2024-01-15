@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-
 var FinalCmd Command = Command{Name: "tailscale up", Flags: map[Flag]string{}}
 
 type Flag struct {

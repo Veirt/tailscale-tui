@@ -1,10 +1,9 @@
 package tui
 
 import (
-	"strings"
-
 	"github.com/charmbracelet/lipgloss"
 	"github.com/veirt/tailscale-tui/internal/tailscale"
+	"strings"
 )
 
 var (
@@ -33,7 +32,6 @@ func (m model) View() string {
 
 	return "\n" + m.list.View()
 }
-
 
 var boolChoices = []string{"true", "false"}
 
